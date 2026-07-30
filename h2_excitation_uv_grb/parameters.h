@@ -31,10 +31,16 @@ const std::string chemical_species[] = { "e-", "H", "H+", "H2", "H2+", "He", "He
 #define MAX_NB_STEPS 15
 #define MINIMAL_ABUNDANCE 1.e-99     // for saving in file
 
+// is used in calculations of the time evolution of level populations, the simulations are done up to this time,
+// is used in saving the time evolution of populations of energy levels with v = 0,
+// decay time of (v,J) = (0,6) is 3.8e+7 s, (0,7) is 1.7e+7 s, (1,0) 1.2e+6 s
+#define MAX_MODEL_TIME 1.e+9   
+
+// is used in saving the time evolution of populations of all ro-vibrational levels (v, J),
+#define MAX_SAVING_TIME 3.e+7  // in s
+
 
 #define MIN_MODEL_TIME 1.e+2   // in s, minimal model time at which data are saved,
-#define MAX_MODEL_TIME 1.e+8   // maximal model time in s (the simulations are done up to this time),
-
 #define MODEL_TIME_1 1.e+3
 #define MODEL_TIME_2 1.e+4
 #define MODEL_TIME_3 1.e+5
@@ -46,9 +52,8 @@ const std::string chemical_species[] = { "e-", "H", "H+", "H2", "H2+", "He", "He
 #define NB_OF_BINS_PER_ORDER_TIME_3 64
 #define NB_OF_BINS_PER_ORDER_TIME_4 128
 #define NB_OF_BINS_PER_ORDER_TIME_5 128
-#define NB_OF_BINS_PER_ORDER_TIME_6 64
+#define NB_OF_BINS_PER_ORDER_TIME_6 128     // check the dependence of this parameter on populations of (0,J) energy levels,
 
-
-#define DELTA_OBSERV_TIME 5.e+5  // in s
-// minimal luminosity in the line to save the data
-#define MIN_LUMINOSITY 10.       // in solar luminosities
+// minimal luminosity in the line to save the data (ro-vibrational)
+#define MIN_LUMINOSITY 5.       // in solar luminosities
+#define MIN_LUMINOSITY_ROT 1.

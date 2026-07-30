@@ -1,9 +1,0 @@
-!Viewing angles for which the simulations of GRB jet with gas-dust cloud were performed, 
-!first line - number of angles, angles in radians,
-6
-0.
-0.04
-0.08
-0.12
-0.16
-0.2

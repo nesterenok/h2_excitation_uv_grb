@@ -30,10 +30,11 @@
 #include <algorithm>
 
 #include "constants.h"
-#include "h2_parameters_uv_grb.h"
+#include "parameters.h"
 #include "dynamic_array.h"
 #include "h2_population_evol_eqs.h"
-#include "h2_saving_data_uv_grb.h"
+#include "init_simulation_data.h"
+#include "saving_data.h"
 #include "integration.h"
 
 
@@ -45,23 +46,22 @@ const int VERBOSITY = 1;
 
 // sim_path    - path to the folder with simulation data (GRB propagation results)
 // output_path - path to the folder where data of the current simulations must be saved,
-void init_cloud_parameters(const string& sim_path, double& grb_cloud_distance, double& max_hcolumn_density, double& conc_h_tot, 
-	double& op_ratio_h2, double& h2_fraction, int & jet_type, double& half_opening_angle, double & theta_wing, double& viewing_angle);
-
-void init_layer_coordinates(const string& path, vector<double>& layer_grid_coord, vector<double>& hcolumn_density_coord);
-
-void init_specimen_conc(const string& sim_path, vector<dynamic_array>& d);
-void init_h2_popdensity(const string& sim_path, vector<dynamic_array>& d, vector<int>& qnb_v_arr, vector<int>& qnb_j_arr);
-
 void init_time_intervals(vector<double>& time_arr);
 void simulations_grb_uv(const string& data_path, const string& sim_path, const string& output_path);
 
+
+void init_viewing_angles(const string& path, const string& fname, vector<double>& viewing_angle_grid, vector<string>& sub_folder_arr);
+
+void init_h2_transition_list(const string& path, const energy_diagram* h2_di, const einstein_coeff* h2_einst,
+	vector<transition>& transition_list_file);
+
 // Here, H column density  of the cloud layer centre (from the front cloud boundary) must be = integer value * 1.e+18
 void init_h2_popdensity_evol(const string& output_path, const vector<double>& layer_grid_coord, const vector<double>& hcolumn_density_coord,
-	vector<double>& time_arr, vector< vector<dynamic_array>>& h2_popdens_evol_arr, double conc_h_tot, double vangle, int nb_lev_h2, int nb_layers);
+	vector<double>& time_arr, vector< vector<dynamic_array_template<float>>>& h2_popdens_evol_arr, double conc_h_tot, double vangle, int nb_lev_h2, int nb_layers, 
+	bool rotational_transition_mode);
 
-void calc_line_luminosities(const string& data_path, const string& sim_path, const string& output_path,
-	double hcolumn_density_cloud, double theta_jet_axis, bool is_jet_top_hat);
+void calc_line_luminosities(const string& data_path, const string& sim_path, const string& output_path, const string &sub_folder,
+	const string& fname_viewing_angles, double hcolumn_density_cloud, double theta_jet_axis, bool is_jet_top_hat, bool rotational_transition_mode);
 
 
 static int f_h2ev(realtype t, N_Vector y, N_Vector ydot, void* user_data) {
@@ -70,17 +70,50 @@ static int f_h2ev(realtype t, N_Vector y, N_Vector ydot, void* user_data) {
 }
 
 
+// Indebetouw R.et al., ApJ 619, pp. 931 - 938 (2005)
+// AK/AV = 1/8.8 (RV = 3.1, Indebetouw et al., 2005), AV/NH = 5.3e-22 mag cm2 H-1, tau = A/1.086  (Draine, 2011); note, AK/AV = 1/8.5 (Draine, 2011)
+// from this follows tau_K = 0.654e-22 * NH,
+// wlength in um, return A(lambda)/AK, AK extinction in K band (2.164 um), approximation is valid only at 1.25-7.75 um
+double get_extinction_ir(double wlength) {
+	if (wlength > 7.75) {
+		wlength = 7.75;
+	}
+
+	if (wlength > 1.25) {
+		// Indebetouw et al. (2005)
+		return 4.074 * pow(wlength, -2.22 + 1.21 * log10(wlength));
+	}
+	else {
+		// Draine, Physics of the Interstellar and the Intergalactic medium, chapter 21, p. 239 (2011);
+		// at lambda = 1.22 um, A(lambda)/AIC = 0.489
+		// at lambda = 0.802 um, A(lambda)/AIC = 1.
+		// first, I found A(lambda)/AIC using linear interpolation:
+		double x = (0.489 + (1.22 - wlength) * (1. - 0.489) / (1.22 - 0.802));
+			
+		// A(1.22 um)/AK is multiplied by A(lambda)/AIC / A(1.22 um)/AIC
+		x = 4.074 * pow(1.22, -2.22 + 1.21 * log10(1.22)) * x / 0.489;
+		return x;
+	}
+}
+
+// files in simulation folder that are necessary in simulations:
+//    grb_cloud_parameters.txt
+//    grb_layer_coordinates.txt
+//    grb_specimen_conc.txt
+//    grb_h2_levels.txt
+//    grb_h2_popdens.txt
 
 int main()
 {
-	bool is_jet_top_hat;
+	bool is_jet_top_hat, rotational_transition_mode;
 	int nb_processors(4), verbosity(1);
 	double hcolumn_density_cloud, theta_jet_axis;
 	
-	string fname;
+	string fname_viewing_angles;
 	string data_path;    // path to the input_data folder with spectroscopic, collisional data and etc.
-	string output_path;  // path to the folder where data of the current simulation must be saved,
+	string output_path;  // path to the folder where data of the current simulation must be saved, or with auxiliary data
 	string sim_path;     // path to the folder with simulation data (GRB propagation results)
+	string path, sub_folder;
 
 	stringstream ss;
 	ifstream input;
@@ -101,24 +134,52 @@ int main()
 #endif
 
 	data_path = "C:/Users/Александр/Documents/input_data/";
-	sim_path = "C:/Users/Александр/Documents/Данные и графики/paper GRB H2 infrared emission ultra-violet/sim_grb_cloud_2026/output_2e2_d100_va020/";
-	output_path = "../../../output/nh2e2_va020/";
-	//simulations_grb_uv(data_path, sim_path, output_path);
-
-
-	// the file with viewing angles, for which simulations were performed, is located in the source directory,
-	// sim_path is one of the directories with the simulation data of grb-cloud interaction
-	// if is_jet_top_hat = true, this data is used in top_hat jet simulations
-	sim_path = "C:/Users/Александр/Documents/Данные и графики/paper GRB H2 infrared emission ultra-violet/sim_grb_cloud_2026/output_2e2_d100_va0/";
-	output_path = "../../../output/";
 	
+	// the file with viewing angles, for which simulations were performed, is located in the simulation data directory,
+	// sim_path is the directory with the simulation data of grb-cloud interaction
+	sim_path = "C:/Users/Александр/Documents/Данные и графики/paper GRB H2 infrared emission ultra-violet/sim_grb_cloud_lowz_2026/";
+
+	vector<double> viewing_angle_grid;
+	vector<string> sub_folder_arr;
+
+	fname_viewing_angles = "viewing_angles_d100.txt";
+	init_viewing_angles(sim_path, fname_viewing_angles, viewing_angle_grid, sub_folder_arr);
+
+#pragma omp parallel private(path, output_path)
+	{
+#pragma omp for schedule(dynamic, 1) nowait
+		for (int i = 0; i < (int)viewing_angle_grid.size(); i++)
+		{
+			path = sim_path + sub_folder_arr[i];
+			output_path = "../../output/" + sub_folder_arr[i];
+			//simulations_grb_uv(data_path, path, output_path);
+		}
+	}
+	
+	sim_path = "C:/Users/Александр/Documents/Данные и графики/paper GRB H2 infrared emission ultra-violet/sim_grb_cloud_lowz_2026/";
+	output_path = "../../output/";
+	fname_viewing_angles = "viewing_angles_d10.txt";
+	sub_folder = "d10_nh2e21/";
+
+	// H column density
 	hcolumn_density_cloud = 2.e+21;   // [cm-2]
-	is_jet_top_hat = true;
+	
+	// if is_jet_top_hat = true, this data is used in top_hat jet simulations
+	is_jet_top_hat = false;
+
+	// ro-vibrational and pure rotational transitions are treated separately
+	rotational_transition_mode = false;
 
 	// angle between observation line of sight and jet axis,
-	theta_jet_axis = 0.05;   // [radians]
+	theta_jet_axis = 0.;   // [radians]
 	
-	calc_line_luminosities(data_path, sim_path, output_path, hcolumn_density_cloud, theta_jet_axis, is_jet_top_hat);
+	calc_line_luminosities(data_path, sim_path, output_path, sub_folder, fname_viewing_angles, 
+		hcolumn_density_cloud, theta_jet_axis, is_jet_top_hat, rotational_transition_mode);
+
+	rotational_transition_mode = true;
+	
+	calc_line_luminosities(data_path, sim_path, output_path, sub_folder, fname_viewing_angles,
+		hcolumn_density_cloud, theta_jet_axis, is_jet_top_hat, rotational_transition_mode);
 }
 
 
@@ -168,7 +229,7 @@ void simulations_grb_uv(const string& data_path, const string& sim_path, const s
 	double grb_cloud_distance, max_hcolumn_density, hcolumn_density, conc_h_tot, op_ratio_h2, h2_fraction,
 		half_opening_angle, theta_wing, viewing_angle;
 	
-	double rel_tol, model_time_aux, model_time_aux_prev, model_time, model_time_step, model_time_out;
+	double rel_tol, model_time, model_time_step, model_time_out;
 
 	time_t timer, timer_tot;
 	char* ctime_str;
@@ -298,7 +359,7 @@ void simulations_grb_uv(const string& data_path, const string& sim_path, const s
 		//
 		// Simulations
 		//
-		model_time_aux = model_time = 0.;
+		model_time = 0.;
 
 		// restart of the solver with new values of initial conditions,
 		flag = CVodeReInit(cvode_mem, model_time, y);
@@ -310,11 +371,10 @@ void simulations_grb_uv(const string& data_path, const string& sim_path, const s
 		// there is integration of the parameters over the time, this time step must be sufficiently small, 
 		model_time_step = 1.;
 
-		while (model_time < time_arr.back())
+		while ((model_time < time_arr.back()) || ((model_time > time_arr.back()) && (time_nb < (int)time_arr.size())))
 		{
 			flag = CV_SUCCESS;
 			must_be_saved = false;
-			model_time_aux_prev = model_time_aux;
 
 			if (model_time < time_arr[time_nb])
 			{
@@ -333,17 +393,13 @@ void simulations_grb_uv(const string& data_path, const string& sim_path, const s
 				if (model_time > time_arr[time_nb]) {
 					// step back to the time grid value, updating model time,
 					flag = CVodeGetDky(cvode_mem, time_arr[time_nb], 0, y);
-					model_time_aux = time_arr[time_nb];
-
+					
 					must_be_saved = true;
 					time_nb++;
 
 					if (flag != CV_SUCCESS) {
 						cout << "Error in CVodeGetDky() " << flag << endl;
 					}
-				}
-				else {
-					model_time_aux = model_time;
 				}
 
 				// saving data,
@@ -368,17 +424,17 @@ void simulations_grb_uv(const string& data_path, const string& sim_path, const s
 				break;
 			}
 		}
-
-		if (VERBOSITY) {
-			i = (int)(time(NULL) - timer);
-			cout << left << "Calc time (s): " << i << endl;
-		}
-
 		// H column density from the cloud boundary to the cloud layer centre,
 		// Here, H column density must be = integer value * 1.e+18
 		hcolumn_density = conc_h_tot * (layer_centre_distances[lay_nb] - grb_cloud_distance);
 
 		save_h2_populations_evolution(output_path, time_arr, h2_popdens_evol, conc_h_tot, hcolumn_density, nb_lev_h2);
+		save_h2_populations_evolution_rotational(output_path, time_arr, h2_popdens_evol, conc_h_tot, hcolumn_density, nb_lev_h2);
+		
+		if (VERBOSITY) {
+			i = (int)(time(NULL) - timer);
+			cout << left << "Calc time (s): " << i << endl;
+		}
 	}
 
 	if (VERBOSITY) {
@@ -400,288 +456,26 @@ void simulations_grb_uv(const string& data_path, const string& sim_path, const s
 }
 
 
-// initialization of parameters of the gas-dust cloud
-void init_cloud_parameters(const string& sim_path, double& grb_cloud_distance, double & max_hcolumn_density, double& conc_h_tot, 
-	double& op_ratio_h2, double & h2_fraction, int& jet_type, double& half_opening_angle, double& theta_wing, double& viewing_angle)
+void calc_line_luminosities(const string& data_path, const string& sim_path, const string& output_path, const string& sub_folder, 
+	const string& fname_viewing_angles, double hcolumn_density_cloud, double theta_jet_axis, bool is_jet_top_hat, bool rotational_transition_mode)
 {
-	int i;
-	char text_line[MAX_TEXT_LINE_WIDTH];
-
-	string fname;
-	stringstream ss;
-	ifstream input;
-
-	fname = sim_path + "grb_cloud_parameters.txt";
-	input.open(fname.c_str());
-
-	if (!input) {
-		cout << "Error in " << SOURCE_NAME << ": can't open file with data " << fname << endl;
-		exit(1);
-	}
-
-	while (!input.eof())
-	{
-		for (i = 0; i < 5; i++) {
-			input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		}
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> conc_h_tot;  // [cm-3]
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> op_ratio_h2;
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> h2_fraction;
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> grb_cloud_distance;  // [cm], distance from the GRB source to the cloud boundary,
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> max_hcolumn_density;  // [cm-2], maximal column density of the cloud,
-
-		for (i = 0; i < 9; i++) {
-			input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		}
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> jet_type;
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> half_opening_angle;  // [rad],
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> theta_wing;          // [rad],
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-		ss.clear();
-		ss.str(text_line);
-		ss >> viewing_angle;      // [rad],
-
-		input.close();
-	}
-}
-
-
-void init_layer_coordinates(const string& path, vector<double> & layer_grid_coord, vector<double> & hcolumn_density_coord)
-{
-	int i, l, nb;
-	double x1, x2, x3, x4;
-	char text_line[MAX_TEXT_LINE_WIDTH];
-
-	string fname;
-	ifstream input;
-
-	fname = path + "grb_layer_coordinates.txt";
-	input.open(fname.c_str(), ios_base::in);
-
-	if (!input.is_open()) {
-		cout << "Error in " << SOURCE_NAME << ": can't open " << fname << endl;
-		exit(1);
-	}
-
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input >> nb;
-	
-	layer_grid_coord.clear();
-	for (i = 0; i < nb; i++) {
-		input >> l >> x1 >> x2 >> x3 >> x4;
-		
-		layer_grid_coord.push_back(x1);
-		hcolumn_density_coord.push_back(x3);
-	}
-	layer_grid_coord.push_back(x2);
-	hcolumn_density_coord.push_back(x4);
-	
-	input.close();
-}
-
-
-void init_specimen_conc(const string& path, vector<dynamic_array>& d)
-{
-	int i, j, k, nb_l, nb_sp;
-	double x, conc_h_tot;
-	char ch, text_line[MAX_TEXT_LINE_WIDTH];
-
-	string fname, sn;
-	stringstream ss;
-	ifstream input;
-
-	vector<string> chemical_species_file;
-	dynamic_array specimen_conc(NB_OF_CHEM_SPECIES);
-
-	fname = path + "grb_specimen_conc.txt";
-	input.open(fname.c_str(), ios_base::in);
-
-	if (!input.is_open()) {
-		cout << "Error in " << SOURCE_NAME << ": can't open " << fname << endl;
-		exit(1);
-	}
-
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-	ss.clear();
-	ss.str(text_line);
-	ss >> ch >> conc_h_tot >> nb_l >> nb_sp;
-
-	if (nb_sp != NB_OF_CHEM_SPECIES) {
-		cout << "Note: nb of species in input file does not coincide with that in the code." << endl;
-	}
-
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	ss.clear();
-	ss.str(text_line);
-
-	ss >> sn >> sn;  // "!nb",  "distance(cm)"
-	for (i = 0; i < nb_sp; i++) {
-		ss >> sn;
-		chemical_species_file.push_back(sn);
-	}
-
-	for (i = 0; i < nb_l; i++) {
-		d.push_back(specimen_conc);
-
-		input >> j >> x;
-		for (j = 0; j < nb_sp; j++) {
-			input >> x;
-
-			for (k = 0; k < NB_OF_CHEM_SPECIES; k++) {
-				if (chemical_species_file[j] == chemical_species[k]) {
-					d[i].arr[k] = x;  // vector index - layer nb, array index - specimen nb,
-				}
-			}
-		}
-	}
-	input.close();
-}
-
-
-// In the file, the levels are denoted by the number,
-void init_h2_popdensity(const string& path, vector<dynamic_array>& d, vector<int>& qnb_v_arr, vector<int>& qnb_j_arr)
-{
-	int i, j, v, nb, nb_l, nb_lev_h2_f;
-	double x, conc_h_tot, distance;
-	char ch, text_line[MAX_TEXT_LINE_WIDTH];
-
-	string fname, sn;
-	stringstream ss;
-	ifstream input;
-
-	// Reading the data file with the list of H2 levels of the ground electronic state,
-	// these levels were used in GRB propagation simulations,
-	qnb_j_arr.clear();
-	qnb_v_arr.clear();
-
-	fname = path + "grb_h2_levels.txt";
-	input.open(fname.c_str(), ios_base::in);
-
-	if (!input.is_open()) {
-		cout << "Error in " << SOURCE_NAME << ": can't open " << fname << endl;
-		exit(1);
-	}
-
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-	input >> nb_lev_h2_f;
-	for (i = 0; i < nb_lev_h2_f; i++) {
-		input >> nb >> v >> j >> x;
-		
-		qnb_v_arr.push_back(v);
-		qnb_j_arr.push_back(j);
-	}
-	input.close();
-
-	// reading the data file with the population densities of H2 molecule,
-	fname = path + "grb_h2_popdens.txt";
-	input.open(fname.c_str(), ios_base::in);
-
-	if (!input.is_open()) {
-		cout << "Error in " << SOURCE_NAME << ": can't open " << fname << endl;
-		exit(1);
-	}
-
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-	input >> ch >> conc_h_tot >> distance >> nb_l >> nb_lev_h2_f;
-
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);  // reading the end of the previous line
-	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-
-	dynamic_array population_densities(nb_lev_h2_f);
-
-	for (i = 0; i < nb_l; i++) {
-		d.push_back(population_densities);
-		input >> j >> x;
-
-		for (j = 0; j < nb_lev_h2_f; j++) {
-			input >> x;
-			d[i].arr[j] = x;  // vector index - layer nb, array index - molecule level nb,
-		}
-	}
-	input.close();
-}
-
-
-void calc_line_luminosities(const string& data_path, const string& sim_path, const string& output_path, 
-	double hcolumn_density_cloud, double theta_jet_axis, bool is_jet_top_hat)
-{
-	bool quit_cycle;
-	char text_line[MAX_TEXT_LINE_WIDTH];
-	int i, j, k, v, nb, lay, lev, nb_layers, nb_lev_h2, nb_times, nb_observ_times, nb_viewing_angles, isotope, jet_type;
+	bool quit_cycle, is_transition_rotational;
+	int i, j, k, v, nb, lay, lev, nb_layers, nb_lev_h2, nb_lines_h2, nb_times, nb_observ_times, nb_viewing_angles, isotope, jet_type;
 	
 	// parameters of the jet and molecular cloud,
-	double x, h2_fraction, conc_h_tot, op_ratio_h2, cloud_width, grb_cloud_distance, max_hcolumn_density,
-		half_opening_angle, theta_wing, cos_theta_jet_axis, sin_theta_jet_axis;
+	double x, h2_fraction, conc_h_tot, op_ratio_h2, cloud_width, grb_cloud_distance, max_hcolumn_density, half_opening_angle, 
+		theta_wing, cos_theta_jet_axis, sin_theta_jet_axis;
 
-	double obst_const, observ_time, max_observ_time, max_delta_time, luminosity, vangle, max_cos_theta, cos_theta_observ_time,
-		 min_cos_theta_prime, max_cos_theta_prime, cont_abs_const;
+	double obst_const, observ_time, max_observ_time, delta_observ_time, max_delta_time, luminosity, vangle, max_cos_theta, cos_theta_observ_time,
+		 min_cos_theta_prime, max_cos_theta_prime, abs_const_kband, abs_const_ir, rint_const;
 	
+	double* abs_const_arr, * h2_lines_integr_theta, * h2_popdens_integr_theta;
+
 	vector<double> layer_grid_coord, layer_centre_distances, hcolumn_density_coord, observ_time_arr, time_arr,
 		viewing_angle_grid, cos_viewing_angle_grid;
 	
-	string fname, str_id;
+	string fname, path;
+	vector<string> sub_folder_arr;
 	stringstream ss;
 	ifstream input;
 
@@ -706,23 +500,72 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 	h2_einstein_coeff_roueff2019 *h2_einst 
 		= new h2_einstein_coeff_roueff2019(data_path, h2_di, VERBOSITY);
 
-	double* h2_popdens_integr_theta = new double[nb_lev_h2];
-	dynamic_array h2_popdens_integr_volume(nb_lev_h2);
+	vector<transition> transition_list, transition_list_file;
+	vector<transition>::iterator it_tl;
+
+	//
+	// reading file with viewing angles, for which simulations were performed,
+	init_viewing_angles(sim_path, fname_viewing_angles, viewing_angle_grid, sub_folder_arr);
+	nb_viewing_angles = (int) viewing_angle_grid.size();
+
+	// reading file with the strongest transitions
+	init_h2_transition_list(sim_path, h2_di, h2_einst, transition_list_file);
 	
-	// vector index - time moment number, array index - H2 level number,
+	nb_lines_h2 = (int) transition_list_file.size();
+	sort(transition_list_file.begin(), transition_list_file.end());
+
+	abs_const_arr = new double[nb_lines_h2];
+	h2_lines_integr_theta = new double[nb_lines_h2];
+	h2_popdens_integr_theta = new double[nb_lev_h2];
+	
+	dynamic_array h2_popdens_integr_volume(nb_lev_h2);
+	dynamic_array h2_lines_integr_volume(nb_lines_h2);
+	
+	// vector index - obsevration time moment number, array index - H2 level number,
 	vector<dynamic_array> h2_popdens_integr_volume_arr;
+	// vector index - obsevration time moment number, array index - H2 line number,
+	vector<dynamic_array> h2_lines_integr_volume_arr;
 
-	// first vector index - layer number, second vector index - time moment number, third array index - H2 level number,
-	vector< vector<dynamic_array> > h2_popdens_evol_arr_1, h2_popdens_evol_arr_2;
+	// first vector index - layer number, second vector index - evolution time moment number, third array index - H2 level number,
+	vector< vector<dynamic_array_template<float>> > h2_popdens_evol_arr_1, h2_popdens_evol_arr_2;
 
+	//
 	// reading data common to all simulation data, 
-	init_cloud_parameters(sim_path, grb_cloud_distance, max_hcolumn_density, conc_h_tot, op_ratio_h2, h2_fraction,
+	path = sim_path + sub_folder_arr[0];
+
+	init_cloud_parameters(path, grb_cloud_distance, max_hcolumn_density, conc_h_tot, op_ratio_h2, h2_fraction,
 		jet_type, half_opening_angle, theta_wing, vangle);
 
-	init_layer_coordinates(sim_path, layer_grid_coord, hcolumn_density_coord);
+	init_layer_coordinates(path, layer_grid_coord, hcolumn_density_coord);
+
+	if (is_jet_top_hat) {
+		// only one case with on-axis viewing angle is calculated, given the simulation data path
+		// parameter "jet_type" is ignored,
+		// "half_opening_angle" must be initialized,
+		nb_viewing_angles = 2;
+
+		viewing_angle_grid.clear();
+		viewing_angle_grid.push_back(0.);
+		viewing_angle_grid.push_back(half_opening_angle);
+	}
 
 	cloud_width = hcolumn_density_cloud / conc_h_tot;
-	cont_abs_const = 0.45e-22 * conc_h_tot;  // K band, absorption in continuum, does not depend on molecular fraction
+	
+	// tau = sigma NH is the optical depth for dust extinction, 
+	// Bialy S. Communications Physics 3, 32 (2020), the reference to Draine B.T., "Physics of the Interstellar and Intergalactic medium" (2011),:
+	//		sigma = 4.5e-23 cm2 is the cross section per hydrogen nucleus (the numeric value is an average over 2-3 um),
+	// We use Indebetouw R. et al., ApJ 619, pp. 931-938 (2005),
+	// H2 transition J=6->4 has 8.025 um,
+
+	// cross section * n_{h,tot} for K band (2.164 um)
+	abs_const_kband = 0.654e-22 * conc_h_tot;  // K band, absorption in continuum, does not depend on molecular fraction
+	
+	// recalculate to specific wavelength (2.5 um)
+	abs_const_ir = abs_const_kband * get_extinction_ir(2.5);
+
+	for (nb = 0; nb < nb_lines_h2; nb++) {
+		abs_const_arr[nb] = abs_const_kband * get_extinction_ir(1.e+4 / transition_list_file[nb].energy);  // energy in [cm-1]
+	}
 
 	for (lay = 0; lay < (int)layer_grid_coord.size() - 1; lay++) {
 		layer_centre_distances.push_back(0.5 * (layer_grid_coord[lay] + layer_grid_coord[lay + 1]));
@@ -736,37 +579,8 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 	cos_theta_jet_axis = cos(theta_jet_axis);
 	sin_theta_jet_axis = sin(theta_jet_axis);
 
-	// calculation of integrals
+	// calculation of auxiliary integrals
 	table_int.setp(cos_theta_jet_axis, sin_theta_jet_axis);
-
-	if (is_jet_top_hat) {
-		// only one case with on-axis viewing angle is calculated, given the simulation data path
-		// the value of jet_type is ignored,
-		nb_viewing_angles = 2;
-	
-		viewing_angle_grid.push_back(0.);
-		viewing_angle_grid.push_back(half_opening_angle);
-	}
-	else {
-		// reading file with viewing angles, for which simulations were performed, is located in the source directory,
-		fname = "viewing_angles.txt";
-		input.open(fname.c_str(), ios_base::in);
-
-		if (!input.is_open()) {
-			cout << "Error in " << SOURCE_NAME << ": can't open " << fname << endl;
-			exit(1);
-		}
-
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input.getline(text_line, MAX_TEXT_LINE_WIDTH);
-		input >> nb_viewing_angles;
-
-		for (i = 0; i < nb_viewing_angles; i++) {
-			input >> x;
-			viewing_angle_grid.push_back(x);
-		}
-		input.close();
-	}
 
 	for (v = 0; v < nb_viewing_angles; v++) {
 		cos_viewing_angle_grid.push_back(cos(viewing_angle_grid[v]));
@@ -776,23 +590,44 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 	max_observ_time = 1.e+7;
 	max_observ_time += layer_grid_coord[nb_layers] * (1. - cos(viewing_angle_grid.back() + theta_jet_axis)) / SPEED_OF_LIGHT;  // in [s]
 	
-	nb_observ_times = (int)(max_observ_time / DELTA_OBSERV_TIME) + 1;
-	for (i = 0; i < nb_observ_times; i++) {
-		observ_time_arr.push_back(DELTA_OBSERV_TIME * i);
+	if (max_observ_time > 30. * YEARS_TO_SECONDS) {
+		max_observ_time = 30. * YEARS_TO_SECONDS;
+	}
+	
+	if (max_observ_time < 10. * YEARS_TO_SECONDS) {
+		delta_observ_time = 5.e+5;  // in [s]
+	}
+	else if (max_observ_time < 20. * YEARS_TO_SECONDS) {
+		delta_observ_time = 10.e+5;  // in [s]
+	}
+	else {
+		delta_observ_time = 15.e+5;  // in [s]
 	}
 
-	// the main container with integration data: 
+	nb_observ_times = (int)(max_observ_time / delta_observ_time) + 1;
 	for (i = 0; i < nb_observ_times; i++) {
+		observ_time_arr.push_back(delta_observ_time * i);
+	}
+
+	// the main containers with integration data: 
+	for (i = 0; i < nb_observ_times; i++) 
+	{
 		h2_popdens_integr_volume_arr.push_back(h2_popdens_integr_volume);
+		h2_lines_integr_volume_arr.push_back(h2_lines_integr_volume);
 	}
 
+	// 
 	// Initialization of data on population densities for viewing angle equal to zero,
 	vangle = viewing_angle_grid[0];
-	init_h2_popdensity_evol(output_path, layer_grid_coord, hcolumn_density_coord, time_arr, h2_popdens_evol_arr_1, 
-		conc_h_tot, vangle, nb_lev_h2, nb_layers);
+	path = output_path + sub_folder_arr[0];
+
+	init_h2_popdensity_evol(path, layer_grid_coord, hcolumn_density_coord, time_arr, h2_popdens_evol_arr_1, 
+		conc_h_tot, vangle, nb_lev_h2, nb_layers, rotational_transition_mode);
 
 	nb_times = (int)time_arr.size();
 
+	//
+	// the main loop
  	for (v = 1; v < nb_viewing_angles; v++) {	
 		if (is_jet_top_hat) {
 			for (lay = 0; lay < (int)h2_popdens_evol_arr_1.size(); lay++) {
@@ -802,9 +637,10 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 		else {
 			// reading the data on population densities for given viewing angle,
 			vangle = viewing_angle_grid[v];
+			path = output_path + sub_folder_arr[v];
 
-			init_h2_popdensity_evol(output_path, layer_grid_coord, hcolumn_density_coord, time_arr, h2_popdens_evol_arr_2,
-				conc_h_tot, vangle, nb_lev_h2, nb_layers);
+			init_h2_popdensity_evol(path, layer_grid_coord, hcolumn_density_coord, time_arr, h2_popdens_evol_arr_2,
+				conc_h_tot, vangle, nb_lev_h2, nb_layers, rotational_transition_mode);
 		}
 
 		max_cos_theta_prime = cos(viewing_angle_grid[v - 1]);   // closer to the axis
@@ -827,12 +663,19 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 			for (lev = 0; lev < nb_lev_h2; lev++) {
 				h2_popdens_integr_volume.arr[lev] = 0.;
 			}
+			for (i = 0; i < nb_lines_h2; i++) {
+				h2_lines_integr_volume.arr[i] = 0.;
+			}
 
+			//
 			// integration by depth (or, equivalently, summation of cloud layers),
 			for (lay = 0; lay < nb_layers; lay++)
 			{
 				memset(h2_popdens_integr_theta, 0, nb_lev_h2 * sizeof(double));
+				memset(h2_lines_integr_theta, 0, nb_lines_h2 * sizeof(double));
+
 				obst_const = SPEED_OF_LIGHT / layer_centre_distances[lay];
+				rint_const = layer_centre_distances[lay] * layer_centre_distances[lay] * (layer_grid_coord[lay + 1] - layer_grid_coord[lay]);
 
 				// upper limit in integration by cos theta, the inner border of the ring
 				max_cos_theta = 1.;
@@ -845,21 +688,25 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 					max_cos_theta = cos_theta_observ_time + obst_const * max_delta_time;
 				}
 				
+				//
 				// integration by theta, or equivalently, time,
-#pragma omp parallel private(k, lev, x)
+#pragma omp parallel private(i, k, lev, x)
 				{
 					double x1, x2, tau;
 					double cos_theta, cos_theta_1, cos_theta_2, sin_theta, sin_theta_sq, cos_theta_prime_1, cos_theta_prime_2, 
 						integral_by_phi, linear_integral_by_phi, max_cos_phi, min_cos_phi, min_phi, max_phi;
 
-					double * arr_h2 = new double[nb_lev_h2];
-					memset(arr_h2, 0, nb_lev_h2 * sizeof(double));
-					 
+					double * arr_levels = new double[nb_lev_h2];
+					memset(arr_levels, 0, nb_lev_h2 * sizeof(double));
+
+					double* arr_lines = new double[nb_lines_h2];
+					memset(arr_lines, 0, nb_lines_h2 * sizeof(double));
+	 
 #pragma omp for schedule(dynamic, 1)
 					for (k = 0; k < nb_times - 1; k++) 
 					{
-						const dynamic_array & h2_popdens_1 = h2_popdens_evol_arr_1[lay][k];
-						const dynamic_array & h2_popdens_2 = h2_popdens_evol_arr_2[lay][k];
+						const dynamic_array_template<float> & h2_popdens_1 = h2_popdens_evol_arr_1[lay][k];
+						const dynamic_array_template<float> & h2_popdens_2 = h2_popdens_evol_arr_2[lay][k];
 
 						// conversion from time to cos theta
 						cos_theta_1 = cos_theta_observ_time + obst_const * time_arr[k];
@@ -926,19 +773,32 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 								{
 									tau = sqrt((cloud_width + grb_cloud_distance) * (cloud_width + grb_cloud_distance) - layer_centre_distances[lay] * layer_centre_distances[lay] * sin_theta_sq)
 										- layer_centre_distances[lay] * cos_theta;
-
-									tau *= cont_abs_const;
 								}
 
-								x = (cos_theta_2 - cos_theta_1) * exp(-tau) / (viewing_angle_grid[v] - viewing_angle_grid[v - 1]);
-								
+								x = (cos_theta_2 - cos_theta_1) / (viewing_angle_grid[v] - viewing_angle_grid[v - 1])
+									* exp(-tau * abs_const_ir);
+									
 								for (lev = 0; lev < nb_lev_h2; lev++) {
-									x1 = h2_popdens_1.arr[lev];
-									x2 = h2_popdens_2.arr[lev];
+									x1 = (double) (h2_popdens_1.arr[lev]);
+									x2 = (double) (h2_popdens_2.arr[lev]);
 
 									// [cm-3], not divided by statistical weight,
-									arr_h2[lev] += (integral_by_phi * (x1 * viewing_angle_grid[v] - x2 * viewing_angle_grid[v - 1])
+									// average dust absorption for all volume-integrated population densities
+									arr_levels[lev] += (integral_by_phi * (x1 * viewing_angle_grid[v] - x2 * viewing_angle_grid[v - 1])
 										+ linear_integral_by_phi * (x2 - x1)) * x;
+								}
+ 
+								// individual absorption for each H2 line
+								x = (cos_theta_2 - cos_theta_1) / (viewing_angle_grid[v] - viewing_angle_grid[v - 1]);
+
+								for (i = 0; i < nb_lines_h2; i++) {
+									lev = transition_list_file[i].up_lev.nb;
+
+									x1 = (double)(h2_popdens_1.arr[lev]);
+									x2 = (double)(h2_popdens_2.arr[lev]);
+
+									arr_lines[i] += (integral_by_phi * (x1 * viewing_angle_grid[v] - x2 * viewing_angle_grid[v - 1])
+										+ linear_integral_by_phi * (x2 - x1)) * x * exp(-tau * abs_const_arr[i]);
 								}
 							}
 						}
@@ -947,26 +807,41 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 #pragma omp critical
 					{
 						for (lev = 0; lev < nb_lev_h2; lev++) {
-							h2_popdens_integr_theta[lev] += arr_h2[lev];
+							h2_popdens_integr_theta[lev] += arr_levels[lev];
+						}
+						for (i = 0; i < nb_lines_h2; i++) {
+							h2_lines_integr_theta[i] += arr_lines[i];
 						}
 					}
-					delete[] arr_h2;
+					delete[] arr_levels;
+					delete[] arr_lines;
 				}
 				
 				for (lev = 0; lev < nb_lev_h2; lev++) {
-					if (layer_grid_coord[lay + 1] - grb_cloud_distance < cloud_width)
-					{
-						h2_popdens_integr_volume.arr[lev] += h2_popdens_integr_theta[lev]
-							* layer_centre_distances[lay] * layer_centre_distances[lay] * (layer_grid_coord[lay + 1] - layer_grid_coord[lay]);
+					if (layer_grid_coord[lay + 1] - grb_cloud_distance < cloud_width) {
+						h2_popdens_integr_volume.arr[lev] += h2_popdens_integr_theta[lev] * rint_const;
 					}
 					else {
 						h2_popdens_integr_volume.arr[lev] += h2_popdens_integr_theta[lev]
 							* layer_centre_distances[lay] * layer_centre_distances[lay] * (cloud_width + grb_cloud_distance - layer_grid_coord[lay]);
 					}
 				}
+
+				for (i = 0; i < nb_lines_h2; i++) {
+					if (layer_grid_coord[lay + 1] - grb_cloud_distance < cloud_width) {
+						h2_lines_integr_volume.arr[i] += h2_lines_integr_theta[i] * rint_const;
+					}
+					else {
+						h2_lines_integr_volume.arr[i] += h2_lines_integr_theta[i]
+							* layer_centre_distances[lay] * layer_centre_distances[lay] * (cloud_width + grb_cloud_distance - layer_grid_coord[lay]);
+					}
+				}
 			}
 			for (lev = 0; lev < nb_lev_h2; lev++) {
 				h2_popdens_integr_volume_arr[nb].arr[lev] += h2_popdens_integr_volume.arr[lev];
+			}
+			for (i = 0; i < nb_lines_h2; i++) {
+				h2_lines_integr_volume_arr[nb].arr[i] += h2_lines_integr_volume.arr[i];
 			}
 		}
 	
@@ -979,11 +854,25 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 		}
 	}
 
-	vector<transition> trans_list;
-	dynamic_array line_luminosity_evol(nb_observ_times);
-
 	// (first) vector index: transition number, (second) array index - time moment number,
-	vector<dynamic_array> line_luminosity_evol_arr;
+	vector<dynamic_array> luminosity_evol_arr_estimated, luminosity_evol_arr, fline_luminosity_evol_arr;
+	vector<dynamic_array>::iterator it_la;
+
+	dynamic_array luminosity_evol(nb_observ_times);
+
+	for (k = 0; k < (int)transition_list_file.size(); k++) {
+		i = transition_list_file[k].up_lev.nb;
+		j = transition_list_file[k].low_lev.nb;
+
+		for (nb = 0; nb < nb_observ_times; nb++)
+		{
+			luminosity = h2_einst->arr[i][j] * (h2_di->lev_array[i].energy - h2_di->lev_array[j].energy) * CM_INVERSE_TO_ERG 
+				* h2_lines_integr_volume_arr[nb].arr[k] / SOLAR_LUMINOSITY;
+
+			luminosity_evol.arr[nb] = luminosity;
+		}
+		fline_luminosity_evol_arr.push_back(luminosity_evol);
+	}
 
 	// Search for high-luminosity lines,
 	// loop over H2 ro-vibrational transitions:
@@ -993,38 +882,59 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 			if (h2_einst->arr[i][j] > 1.e-99) {
 				quit_cycle = false;
 
+				is_transition_rotational = false;
+				if (h2_di->lev_array[i].v == 0 && h2_di->lev_array[j].v == 0) {
+					is_transition_rotational = true;
+				}
+
 				// for each observational time, the calculation of luminosity,
 				for (nb = 0; (nb < nb_observ_times) && (!quit_cycle); nb++)
 				{
 					luminosity = h2_einst->arr[i][j] * (h2_di->lev_array[i].energy - h2_di->lev_array[j].energy) * CM_INVERSE_TO_ERG
 						* h2_popdens_integr_volume_arr[nb].arr[i] / SOLAR_LUMINOSITY;
 
-					if (luminosity > MIN_LUMINOSITY) {
-						trans_list.push_back(transition(h2_di->lev_array[j], h2_di->lev_array[i]));
+					if (luminosity > MIN_LUMINOSITY || (is_transition_rotational && luminosity > MIN_LUMINOSITY_ROT)) {
+						transition_list.push_back(transition(h2_di->lev_array[j], h2_di->lev_array[i], h2_einst->arr[i][j]));
 						quit_cycle = true;
 					}
 				}
 			}
 		}
 	}
-	sort(trans_list.begin(), trans_list.end());
+	sort(transition_list.begin(), transition_list.end());
 
-	for (k = 0; k < (int)trans_list.size(); k++) 
-	{
-		i = trans_list[k].up_lev.nb;
-		j = trans_list[k].low_lev.nb;
+	for (k = 0; k < (int)transition_list.size(); k++) {
+		i = transition_list[k].up_lev.nb;
+		j = transition_list[k].low_lev.nb;
 		
 		for (nb = 0; nb < nb_observ_times; nb++)
 		{
 			luminosity = h2_einst->arr[i][j] * (h2_di->lev_array[i].energy - h2_di->lev_array[j].energy) * CM_INVERSE_TO_ERG
 				* h2_popdens_integr_volume_arr[nb].arr[i] / SOLAR_LUMINOSITY;
 
-			line_luminosity_evol.arr[nb] = luminosity;
+			luminosity_evol.arr[nb] = luminosity;
 		}
-		line_luminosity_evol_arr.push_back(line_luminosity_evol);
+		luminosity_evol_arr_estimated.push_back(luminosity_evol);
 	}
 
-	save_h2_line_luminosities(output_path, observ_time_arr, trans_list, line_luminosity_evol_arr, theta_jet_axis, is_jet_top_hat);
+	for (k = 0; k < (int)transition_list.size(); k++) {
+		for (i = 0; i < (int)transition_list_file.size(); i++) {
+			if (transition_list[k] == transition_list_file[i]) {
+				break;
+			}
+		}
+
+		if (i == (int)transition_list_file.size()) {
+			luminosity_evol_arr.push_back(luminosity_evol_arr_estimated[k]);
+		}
+		else {
+			luminosity_evol_arr.push_back(fline_luminosity_evol_arr[i]);
+		}
+	}
+
+	path = output_path + sub_folder;
+	save_h2_line_luminosities(path, observ_time_arr, 
+		transition_list, luminosity_evol_arr, luminosity_evol_arr_estimated, theta_jet_axis, is_jet_top_hat, rotational_transition_mode);
 
 	if (VERBOSITY) {
 		i = (int)(time(NULL) - timer);
@@ -1033,39 +943,91 @@ void calc_line_luminosities(const string& data_path, const string& sim_path, con
 }
 
 
+//
+void init_viewing_angles(const string& path, const string& fname_viewing_angles, vector<double> & viewing_angle_grid, vector<string> & sub_folder_arr)
+{
+	char text_line[MAX_TEXT_LINE_WIDTH];
+	int i, nb_viewing_angles;
+	double x;
+
+	string str, fname;
+	ifstream input;
+
+	fname = path + fname_viewing_angles;
+	input.open(fname.c_str(), ios_base::in);
+
+	if (!input.is_open()) {
+		cout << "Error in " << SOURCE_NAME << ": can't open " << fname << endl;
+		exit(1);
+	}
+
+	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
+	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
+	input >> nb_viewing_angles;
+
+	for (i = 0; i < nb_viewing_angles; i++) {
+		input >> x >> str;
+
+		viewing_angle_grid.push_back(x);
+		sub_folder_arr.push_back(str);
+	}
+	input.close();
+}
+
+
+//
+void init_h2_transition_list(const string& path, const energy_diagram *h2_di, const einstein_coeff* h2_einst,
+	vector<transition> & transition_list_file)
+{
+	char text_line[MAX_TEXT_LINE_WIDTH];
+	int nb, i, j, k, v, nb_lines_h2;
+	double x;
+
+	string fname;
+	ifstream input;
+
+	fname = path + "h2_line_list.txt";
+	input.open(fname.c_str(), ios_base::in);
+
+	if (!input.is_open()) {
+		cout << "Error in " << SOURCE_NAME << ": can't open " << fname << endl;
+		exit(1);
+	}
+
+	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
+	input.getline(text_line, MAX_TEXT_LINE_WIDTH);
+	input >> nb_lines_h2;
+
+	for (nb = 0; nb < nb_lines_h2; nb++) {
+		input >> k >> v >> j;
+		i = h2_di->get_nb(v, j);  // upper energy level
+
+		input >> v >> j >> x;
+		k = h2_di->get_nb(v, j);  // lower energy level
+
+		if (i != -1 && k != -1) {
+			transition_list_file.push_back(transition(h2_di->lev_array[k], h2_di->lev_array[i], h2_einst->arr[i][k]));
+		}
+	}
+	input.close();
+}
+
+
 // Here, H column density must be = integer value * 1.e+18
-void init_h2_popdensity_evol(const string & output_path, const vector<double> & layer_grid_coord, const vector<double> & hcolumn_density_coord, 
-	vector<double> & time_arr, vector< vector<dynamic_array>> & h2_popdens_evol_arr, double conc_h_tot, double vangle, int nb_lev_h2, int nb_layers)
+void init_h2_popdensity_evol(const string & path, const vector<double> & layer_grid_coord, const vector<double> & hcolumn_density_coord, 
+	vector<double> & time_arr, vector< vector<dynamic_array_template<float>>> & h2_popdens_evol_arr, double conc_h_tot, double vangle, int nb_lev_h2, int nb_layers, 
+	bool rotational_transition_mode)
 {
 	char ch, text_line[MAX_TEXT_LINE_WIDTH];
 	int i, k, lev, lay, nb_times, nb_lev_f;
 	double x;
 
-	string fname, sub_dir;
+	string fname;
 	ifstream input;
 	stringstream ss;
-
-	dynamic_array h2_popdens(nb_lev_h2);
-	vector<dynamic_array> h2_popdens_evol;
-
-	ss.clear();
-	ss.str("");
-
-	i = (int)log10(conc_h_tot);  // ? treat correctly values like 1.e+2
-	k = rounding(conc_h_tot / pow(10., i));
-
-	ss << "nh" << k << "e" << i;
-	ss << "_va";
-
-	k = rounding(vangle * 100);
-	if (k > 0 && k < 10) {
-		ss << "00";
-	}
-	else if (k >= 10 && k < 100) {
-		ss << "0";
-	}
-	ss << k;
-	sub_dir = ss.str();
+	
+	dynamic_array_template<float> h2_popdens(nb_lev_h2);
+	vector< dynamic_array_template<float> > h2_popdens_evol;
 
 	if (VERBOSITY) {
 		cout << "Initialization of population density data for viewing angle: " << vangle << endl;
@@ -1084,8 +1046,12 @@ void init_h2_popdensity_evol(const string & output_path, const vector<double> & 
 		ss.str("");
 		ss << "_nh" << k << "e" << i;
 
-		fname = output_path + sub_dir;
-		fname += "/h2grb_popdens";
+		if (rotational_transition_mode) {
+			fname = path + "rot_h2grb_popdens";
+		}
+		else {
+			fname = path + "h2grb_popdens";
+		}
 		fname += ss.str();
 		fname += ".txt";
 		input.open(fname.c_str());
@@ -1115,7 +1081,7 @@ void init_h2_popdensity_evol(const string & output_path, const vector<double> & 
 
 			for (lev = 0; lev < nb_lev_f; lev++) {
 				input >> x;
-				h2_popdens.arr[lev] = x;
+				h2_popdens.arr[lev] = (float) x;
 			}
 			h2_popdens_evol.push_back(h2_popdens);
 		}
@@ -1124,7 +1090,7 @@ void init_h2_popdensity_evol(const string & output_path, const vector<double> & 
 		// averaging of population densities over two time moments
 		for (k = 0; k < nb_times - 1; k++) {
 			for (lev = 0; lev < nb_lev_h2; lev++) {
-				h2_popdens_evol[k].arr[lev] = 0.5 * (h2_popdens_evol[k].arr[lev] + h2_popdens_evol[k + 1].arr[lev]);
+				h2_popdens_evol[k].arr[lev] = (float) 0.5 * (h2_popdens_evol[k].arr[lev] + h2_popdens_evol[k + 1].arr[lev]);
 			}
 		}
 
@@ -1172,5 +1138,70 @@ for (lev = 0; lev < nb_lev_h2; lev++) {
 						// [cm-3], not divided by statistical weight,
 						h2_popdens_integr_theta.arr[lev] += x * exp(-tau);
 					}
+	ss.clear();
+	ss.str("");
 
+	i = (int)log10(conc_h_tot);  // ? treat correctly values like 1.e+2
+	k = rounding(conc_h_tot / pow(10., i));
+
+	ss << "nh" << k << "e" << i;
+	ss << "_va";
+
+	k = rounding(vangle * 100);
+	if (k > 0 && k < 10) {
+		ss << "00";
+	}
+	else if (k >= 10 && k < 100) {
+		ss << "0";
+	}
+	ss << k;
+	sub_dir = ss.str();
+*/
+
+/*
+
+	for (k = 0; k < (int)transition_list.size(); k++) {
+		for (i = 0; i < (int)transition_list_file.size(); i++) {
+			if (transition_list[k] == transition_list_file[i]) {
+				break;
+			}
+		}
+		// adding the transition to the list:
+		if (i == (int)transition_list_file.size()) {
+			if (VERBOSITY) {
+				cout << left << "Adding transition to the orginal list: "
+					<< setw(5) << transition_list[k].up_lev.v << setw(5) << transition_list[k].up_lev.j << " -> "
+					<< setw(5) << transition_list[k].low_lev.v << setw(5) << transition_list[k].low_lev.j << endl;
+			}
+
+			for (i = 0; i < (int)transition_list_file.size(); i++) {
+				if (transition_list[k].energy < transition_list_file[i].energy)
+				{
+					it_tl = transition_list_file.begin() + i;
+					transition_list_file.insert(it_tl, transition_list[k]);
+
+					it_la = fline_luminosity_evol_arr.begin() + i;
+					fline_luminosity_evol_arr.insert(it_la, luminosity_evol_arr[k]);
+					break;
+				}
+			}
+		}
+	}
+
+	for (i = 0; i < (int)transition_list_file.size(); i++) {
+		for (k = 0; k < (int)transition_list.size(); k++) {
+			if (transition_list[k] == transition_list_file[i]) {
+				break;
+			}
+		}
+		// removing i-element
+		if (k == (int)transition_list.size()) {
+			it_tl = transition_list_file.begin() + i;
+			transition_list_file.erase(it_tl);
+
+			it_la = fline_luminosity_evol_arr.begin() + i;
+			fline_luminosity_evol_arr.erase(it_la);
+			i--;
+		}
+	}
 */

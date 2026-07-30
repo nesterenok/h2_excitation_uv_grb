@@ -27,13 +27,16 @@
     <ClCompile Include="..\..\c_type_shock\c_type_shock\spectroscopy.cpp">
       <Filter>Исходные файлы</Filter>
     </ClCompile>
-    <ClCompile Include="h2_saving_data_uv_grb.cpp">
-      <Filter>Файлы заголовков</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\input_data\mathematics\integration.cpp">
       <Filter>Исходные файлы</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\input_data\mathematics\interpolation.cpp">
+      <Filter>Исходные файлы</Filter>
+    </ClCompile>
+    <ClCompile Include="saving_data.cpp">
+      <Filter>Исходные файлы</Filter>
+    </ClCompile>
+    <ClCompile Include="init_simulation_data.cpp">
       <Filter>Исходные файлы</Filter>
     </ClCompile>
   </ItemGroup>
@@ -47,12 +50,6 @@
     <ClInclude Include="..\..\c_type_shock\c_type_shock\spectroscopy.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
-    <ClInclude Include="h2_parameters_uv_grb.h">
-      <Filter>Файлы заголовков</Filter>
-    </ClInclude>
-    <ClInclude Include="h2_saving_data_uv_grb.h">
-      <Filter>Файлы заголовков</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\input_data\mathematics\integration.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
@@ -60,6 +57,18 @@
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\input_data\mathematics\utils.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="parameters.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="saving_data.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\input_data\mathematics\constants.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="init_simulation_data.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
   </ItemGroup>

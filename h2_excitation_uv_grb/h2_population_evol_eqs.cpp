@@ -9,7 +9,7 @@
 #include"h2_population_evol_eqs.h"
 #include"constants.h"
 #include"spectroscopy.h"
-#include"h2_parameters_uv_grb.h"
+#include"parameters.h"
 #include"interpolation.h"
 #include"integration.h"
 #include"utils.h"

@@ -153,17 +153,20 @@
     <ClCompile Include="..\..\c_type_shock\c_type_shock\spectroscopy.cpp" />
     <ClCompile Include="h2_excitation_uv_grb.cpp" />
     <ClCompile Include="h2_population_evol_eqs.cpp" />
-    <ClCompile Include="h2_saving_data_uv_grb.cpp" />
+    <ClCompile Include="init_simulation_data.cpp" />
+    <ClCompile Include="saving_data.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\..\input_data\mathematics\constants.h" />
     <ClInclude Include="..\..\..\input_data\mathematics\dynamic_array.h" />
     <ClInclude Include="..\..\..\input_data\mathematics\integration.h" />
     <ClInclude Include="..\..\..\input_data\mathematics\interpolation.h" />
     <ClInclude Include="..\..\..\input_data\mathematics\utils.h" />
     <ClInclude Include="..\..\c_type_shock\c_type_shock\spectroscopy.h" />
-    <ClInclude Include="h2_parameters_uv_grb.h" />
     <ClInclude Include="h2_population_evol_eqs.h" />
-    <ClInclude Include="h2_saving_data_uv_grb.h" />
+    <ClInclude Include="init_simulation_data.h" />
+    <ClInclude Include="parameters.h" />
+    <ClInclude Include="saving_data.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
